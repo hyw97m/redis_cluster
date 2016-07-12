@@ -1,6 +1,6 @@
 
 local redis = require "resty.redis"
-local rediscluster = require "lib.redis_cluster"
+local rediscluster = require "resty.redis_cluster"
 local json_encode   = require("cjson").encode
 
 local concat = table.concat

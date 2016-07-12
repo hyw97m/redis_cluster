@@ -13,7 +13,7 @@ my $pwd = cwd();
 $ENV{TEST_NGINX_ROOT_PATH} = $pwd;
 
 our $HttpConfig = qq{
-    lua_package_path "$pwd/?.lua;../$pwd/?.lua;;";
+    lua_package_path "$pwd/lib/?.lua;;";
 };
 
 $ENV{TEST_NGINX_RESOLVER} = '8.8.8.8';
@@ -28,7 +28,6 @@ run_tests();
 __DATA__
 
 === TEST 1: set, get, del
---- ONLY
 --- http_config eval: $::HttpConfig
 --- config
     location /t {
