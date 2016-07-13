@@ -1,2 +1,2 @@
 # redis_cluster
-lua redis cluster
+lua resty redis cluster client
