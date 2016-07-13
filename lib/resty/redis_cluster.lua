@@ -59,7 +59,7 @@ local crc16tab  = {
 local function crc16(str)
     local crc = 0
     for i=1, #str do
-        crc = bxor(lshift(crc, 8), crc16tab[band(bxor(rshift(crc, 8), str:byte(i)), 0x00FF) + 1]);
+        crc = bxor(lshift(crc, 8), crc16tab[band(bxor(rshift(crc, 8), str:byte(i)), 0x00ff) + 1]);
     end
 
     return crc
@@ -75,7 +75,7 @@ local function keyhashslot(key)
     end
 
     if s == keylen then
-        return band(crc16(key), 0x3FFF) + 1
+        return band(crc16(key), 0x3fff) + 1
     end
 
     for i = s + 1, keylen do
@@ -84,9 +84,9 @@ local function keyhashslot(key)
     end
 
     if e == keylen or e == s + 1 then
-        return band(crc16(key), 0x3FFF) + 1
+        return band(crc16(key), 0x3fff) + 1
     else
-        return band(crc16(str_sub(key, s + 1, e - 1)), 0x3FFF) + 1
+        return band(crc16(str_sub(key, s + 1, e - 1)), 0x3fff) + 1
     end
 end
 
@@ -103,9 +103,9 @@ redis.add_commands("cluster")
 
 local commands = {
     "append",               --[["auth",]]           --[["bgrewriteaof",]]
-    --[["bgsave",]]         "bitcount",             "bitop",
+    --[["bgsave",]]         "bitcount",             --[["bitop",]]
     "blpop",                "brpop",
-    "brpoplpush",           --[["client",]]         --[["config",]]
+    --[["brpoplpush",]]     --[["client",]]         --[["config",]]
     --[["dbsize",]]
     --[["debug",]]          "decr",                 "decrby",
     --[["del",]]            --[["discard",]]        --[["dump",]]
@@ -177,7 +177,7 @@ local function _fetch_slots(self, server)
         local red_cli = redis:new()
         local ok, err = red_cli:connect(svr[1], svr[2])
         if not ok then
-            ngx_log(WARN, err)
+            ngx_log(WARN, tostring(err))
         else
             local info, err = red_cli:cluster("slots")
             if info and type(info) == "table" and #info > 0 then
@@ -263,7 +263,7 @@ local function _do_cmd(self, cmd, key, ...)
     end
 
     local slots = cache_slots[self.config.name]
-    local slot = keyhashslot(key) - 1
+    local slot = keyhashslot(key)
     local host, port = slots[slot].host, slots[slot].port
 
     local red_cli = redis:new()
@@ -344,7 +344,6 @@ local function merge(group, res)
 end
 
 
-
 function _M.commit_pipeline(self)
     local reqs = self._reqs
     local group = self._group
@@ -403,7 +402,6 @@ function _M.commit_pipeline(self)
 
         for i, idx in ipairs(item.idxs) do
             if type(res[i]) == "table" and res[i][1] == false and str_sub(res[i][2], 1, 5) == "MOVED" then
-                refetch = true
                 local m, err = ngx.re.match(res[i][2], "MOVED [0-9]+ ([0-9.]+):([0-9]+)")
                 if type(m) == "table" then
                     local res, err
@@ -412,14 +410,13 @@ function _M.commit_pipeline(self)
                     else
                         res, err = _do_retry(self, m[1], m[2], reqs[i].cmd, reqs[i].key)
                     end
-                    if not res then
-                        ret[idx] = false
-                    else
-                        ret[idx] = res
-                    end
+
+                    ret[idx] = res or false
                 else
                     ret[idx] = false
                 end
+
+                refetch = true
             else
                 ret[idx] = res[i]
             end
@@ -430,6 +427,7 @@ function _M.commit_pipeline(self)
             if res then
                 cache_slots[self.config.name] = res
             end
+
             refetch = nil
         end
 
