@@ -168,30 +168,55 @@ local mcommands = {
     msetnx  = { cmd = "setnx", typ = "incr" },
 }
 
-local cache_slots = new_tab(0, 0x4000)
+local cache_nodes = {}
 
 
-local function _fetch_slots(self, server)
-    local slots = {}
-    for _, svr in ipairs(server) do
+local function _fetch_slots(self)
+    if not cache_nodes[self.config.name] then
+        cache_nodes[self.config.name] = {}
+    end
+
+    if cache_nodes[self.config.name].lock and cache_nodes[self.config.name].lock < ngx.time() then
+        return true
+    end
+
+    cache_nodes[self.config.name].lock = ngx.time()
+
+    local nodes, slots = {}, {}
+    for _, server in ipairs(self.config.servers) do
         local red_cli = redis:new()
-        local ok, err = red_cli:connect(svr[1], svr[2])
+        local ok, err = red_cli:connect(server[1], server[2])
         if not ok then
-            ngx_log(WARN, tostring(err))
+            ngx_log(WARN, server[1], ":", server[2], ", err", tostring(err))
         else
             local info, err = red_cli:cluster("slots")
             if info and type(info) == "table" and #info > 0 then
                 for i=1, #info do
+                    local nodeidx = #nodes + 1
                     local item = info[i]
-                    for slot = item[1], item[2] do
-                        slots[slot + 1] = {
-                            host = item[3][1],
-                            port = item[3][2],
-                        }
+                    local node = {
+                        master  = { item[3][1], item[3][2] },
+                        slave   = { }
+                    }
+
+                    for j = 4, #item do
+                        local slaveidx = #node["slave"] + 1
+                        node["slave"][slaveidx] = { item[j][1], item[j][2] }
                     end
+
+                    for slot = item[1], item[2] do
+                        slots[slot + 1] = nodeidx
+                    end
+
+                    nodes[nodeidx] = node
                 end
 
-                return slots
+                cache_nodes[self.config.name] = {
+                    nodes   = nodes,
+                    slots   = slots,
+                }
+
+                return true
             else
                 ngx_log(WARN, tostring(err))
             end
@@ -200,7 +225,7 @@ local function _fetch_slots(self, server)
         red_cli:set_keepalive(self.config.idle_timeout, self.config.pool_size)
     end
 
-    return nil, "failed to init redis cluster"
+    return nil, nil, "failed to init redis cluster"
 end
 
 
@@ -210,20 +235,20 @@ local _M = {}
 function _M.new(self, conf)
     local config = {
         name    = conf.name or "dev",
-        server  = conf.server,
+        servers = conf.server,
         idle_timeout= conf.idle_timeout or 1000,
         pool_size   = conf.pool_size or 100,
     }
 
     local mt = setmetatable({ config = config, link = {} }, { __index = _M })
-    if not cache_slots[config.name] then
-        local res, err = _fetch_slots(mt, config.server)
-        if not res then
+    if not cache_nodes[config.name] then
+        local ok, err = _fetch_slots(mt)
+        if not ok then
             return nil, err
         end
-
-        cache_slots[config.name] = res
     end
+
+    -- ngx_log(ERR, json_encode(cache_nodes[config.name]["nodes"]))
 
     return mt
 end
@@ -262,30 +287,46 @@ local function _do_cmd(self, cmd, key, ...)
         return true
     end
 
-    local slots = cache_slots[self.config.name]
+    local slots = cache_nodes[self.config.name]["slots"]
     local slot = keyhashslot(key)
-    local host, port = slots[slot].host, slots[slot].port
+    local nodeidx = slots[slot]
+    local node = cache_nodes[self.config.name]["nodes"][nodeidx]
+    local host, port = node.master[1], node.master[2]
+
+    local refetch
 
     local red_cli = redis:new()
     local ok, err = red_cli:connect(host, port)
     if not ok then
-        return nil, err
+        if err ~= 'connection refused' then
+            return nil, err
+        end
+
+        refetch = true
+
+        if #node.slave > 0 then
+            host, port = node.slave[1][1], node.slave[1][2]
+            local ok, err = red_cli:connect(host, port)
+            if not ok then
+                return nil, err
+            end
+        end
     end
 
     local res, err = red_cli[cmd](red_cli, key, ...)
     if not res then
         if err and str_sub(err, 1, 5) == "MOVED" then
-            local res, err = _fetch_slots(self, self.config.server)
-            if res then
-                cache_slots[self.config.name] = res
-            end
-
+            refetch = true
         end
 
         return nil, err
     end
 
     red_cli:set_keepalive(self.config.idle_timeout, self.config.pool_size)
+
+    if refetch then
+        _fetch_slots(self)
+    end
 
     return res, err
 end
@@ -344,6 +385,74 @@ local function merge(group, res)
 end
 
 
+local function _commit(self, nodeidx, reqs)
+    local node = cache_nodes[self.config.name]["nodes"][nodeidx]
+    local host, port = node.master[1], node.master[2]
+
+    local refetch
+
+    local red_cli = redis:new()
+    local ok, err = red_cli:connect(host, port)
+    if not ok then
+        if err ~= 'connection refused' then
+            return nil, nil, err
+        end
+
+        refetch = true
+
+        if #node.slave > 0 then
+            host, port = node.slave[1][1], node.slave[1][2]
+            local ok, err = red_cli:connect(host, port)
+            if not ok then
+                return nil, refetch, err
+            end
+        end
+    end
+
+    red_cli:init_pipeline()
+    for _, req in pairs(reqs) do
+        if req.args and #req.args > 0 then
+            red_cli[req.cmd](red_cli, req.key, unpack(req.args))
+        else
+            red_cli[req.cmd](red_cli, req.key)
+        end
+    end
+
+    local result, err = red_cli:commit_pipeline()
+    if not result then
+        return nil, refetch, err
+    end
+
+    local ret = {}
+
+    for i, rs in ipairs(result) do
+        if type(rs) == "table" and rs[1] == false and str_sub(rs[2], 1, 5) == "MOVED" then
+            local m, err = ngx.re.match(rs[2], "MOVED [0-9]+ ([0-9.]+):([0-9]+)")
+            if type(m) == "table" then
+                local res, err
+                if reqs[i].args and #reqs[i].args > 0 then
+                    res, err = _do_retry(self, m[1], m[2], reqs[i].cmd, reqs[i].key, unpack(reqs[i].args))
+                else
+                    res, err = _do_retry(self, m[1], m[2], reqs[i].cmd, reqs[i].key)
+                end
+
+                ret[i] = res or false
+            else
+                ret[i] = false
+            end
+
+            refetch = true
+        else
+            ret[i] = rs
+        end
+    end
+
+    red_cli:set_keepalive(self.config.idle_timeout, self.config.pool_size)
+
+    return ret, refetch
+end
+
+
 function _M.commit_pipeline(self)
     local reqs = self._reqs
     local group = self._group
@@ -356,81 +465,39 @@ function _M.commit_pipeline(self)
     self._reqs = nil
     self._group = nil
 
-    local slots = cache_slots[self.config.name]
+    local slots = cache_nodes[self.config.name]["slots"]
 
     local map = {}
     for idx, req in ipairs(reqs) do
         local slot = keyhashslot(req.key)
-        local host, port = slots[slot].host, slots[slot].port
+        local nodeidx = slots[slot]
 
-        local svrkey = concat({ host, port }, ":")
-        if not map[svrkey] then
-            map[svrkey] = { server = { host = host, port = port }, reqs = {}, idxs = {} }
+        if not map[nodeidx] then
+            map[nodeidx] = { nodeidx = nodeidx, reqs = {}, idxs = {} }
         end
 
-        local mreqs = map[svrkey].reqs
-        local midxs = map[svrkey].idxs
+        local mreqs = map[nodeidx].reqs
+        local midxs = map[nodeidx].idxs
         mreqs[#mreqs + 1] = req
         midxs[#midxs + 1] = idx
     end
 
     local ret = new_tab(0, #reqs)
 
-    for svrkey, item in pairs(map) do
-        local red_cli = redis:new()
-        local ok, err = red_cli:connect(item.server.host, item.server.port)
-        if not ok then
-            return nil, err
-        end
-
-        red_cli:init_pipeline()
-        local reqs = item.reqs
-        for _, req in pairs(reqs) do
-            if req.args and #req.args > 0 then
-                red_cli[req.cmd](red_cli, req.key, unpack(req.args))
-            else
-                red_cli[req.cmd](red_cli, req.key)
-            end
-        end
-
-        local res, err = red_cli:commit_pipeline()
+    for nodeidx, item in pairs(map) do
+        local res, refetch, err = _commit(self, nodeidx, item.reqs)
         if not res then
             return nil, err
         end
 
-        red_cli:set_keepalive(self.config.idle_timeout, self.config.pool_size)
-
         for i, idx in ipairs(item.idxs) do
-            if type(res[i]) == "table" and res[i][1] == false and str_sub(res[i][2], 1, 5) == "MOVED" then
-                local m, err = ngx.re.match(res[i][2], "MOVED [0-9]+ ([0-9.]+):([0-9]+)")
-                if type(m) == "table" then
-                    local res, err
-                    if reqs[i].args and #reqs[i].args > 0 then
-                        res, err = _do_retry(self, m[1], m[2], reqs[i].cmd, reqs[i].key, unpack(reqs[i].args))
-                    else
-                        res, err = _do_retry(self, m[1], m[2], reqs[i].cmd, reqs[i].key)
-                    end
-
-                    ret[idx] = res or false
-                else
-                    ret[idx] = false
-                end
-
-                refetch = true
-            else
-                ret[idx] = res[i]
-            end
+            ret[idx] = res[i]
         end
 
         if refetch then
-            local res, err = _fetch_slots(self, self.config.server)
-            if res then
-                cache_slots[self.config.name] = res
-            end
-
+            _fetch_slots(self)
             refetch = nil
         end
-
     end
 
     if #group > 0 then
