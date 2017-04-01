@@ -3,7 +3,6 @@
 local bit   = require "bit";
 local json_encode   = require("cjson").encode
 
-
 local bxor      = bit.bxor
 local band      = bit.band
 local lshift    = bit.lshift
@@ -17,7 +16,7 @@ local tbl_insert= table.insert
 
 local ngx_log   = ngx.log
 local ERR       = ngx.ERR
-local WARN       = ngx.WARN
+local WARN      = ngx.WARN
 
 
 local crc16tab  = {
@@ -248,8 +247,6 @@ function _M.new(self, conf)
         end
     end
 
-    -- ngx_log(ERR, json_encode(cache_nodes[config.name]["nodes"]))
-
     return mt
 end
 
@@ -267,8 +264,6 @@ local function _do_retry(self, host, port, cmd, key, ...)
     else
         res, err = red_cli[cmd](red_cli, key)
     end
-
-    -- ngx_log(ERR, concat({host, port, cmd, key, tostring(res), tostring(err)}, "|"))
 
     red_cli:set_keepalive(self.config.idle_timeout, self.config.pool_size)
 
