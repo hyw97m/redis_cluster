@@ -14,6 +14,7 @@ redis cluster
 server {
     location /t {
         content_by_lua_block {
+            local rediscluster = require "resty.redis_cluster"
             local config = {
                 name = "name",
                 server = {
