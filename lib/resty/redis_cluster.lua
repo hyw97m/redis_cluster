@@ -170,15 +170,15 @@ local mcommands = {
 local cache_nodes = {}
 
 
-local function _connect(host, port, auth)
+local function _connect(host, port, password)
     local red_cli = redis:new()
     local ok, err = red_cli:connect(host, port)
     if not ok then
         return nil, err
     end
 
-    if auth then
-        ok, err = red_cli:auth(auth)
+    if password then
+        ok, err = red_cli:auth(password)
     end
 
     return red_cli, err
@@ -198,7 +198,7 @@ local function _fetch_slots(self)
 
     local nodes, slots = {}, {}
     for _, server in ipairs(self.config.servers) do
-        local red_cli, err = _connect(server[1], server[2], self.config.auth)
+        local red_cli, err = _connect(server[1], server[2], self.config.password)
         if not red_cli then
             ngx_log(WARN, server[1], ":", server[2], ", err", tostring(err))
         else
@@ -249,7 +249,7 @@ function _M.new(self, conf)
     local config = {
         name    = conf.name or "dev",
         servers = conf.server,
-        auth    = conf.auth,
+        password= conf.password,
         idle_timeout= conf.idle_timeout or 1000,
         pool_size   = conf.pool_size or 100,
     }
@@ -267,7 +267,7 @@ end
 
 
 local function _do_retry(self, host, port, cmd, key, ...)
-    local red_cli, err = _connect(host, port, self.config.auth)
+    local red_cli, err = _connect(host, port, self.config.password)
     if not red_cli then
         return nil, err
     end
@@ -304,7 +304,7 @@ local function _do_cmd(self, cmd, key, ...)
 
     local refetch
 
-    local red_cli, err = _connect(host, port, self.config.auth)
+    local red_cli, err = _connect(host, port, self.config.password)
     if not red_cli then
         if err ~= 'connection refused' then
             return nil, err
@@ -314,7 +314,7 @@ local function _do_cmd(self, cmd, key, ...)
 
         if #node.slave > 0 then
             host, port = node.slave[1][1], node.slave[1][2]
-            red_cli, err = _connect(host, port, self.config.auth)
+            red_cli, err = _connect(host, port, self.config.password)
             if not red_cli then
                 return nil, err
             end
@@ -399,7 +399,7 @@ local function _commit(self, nodeidx, reqs)
 
     local refetch
 
-    local red_cli, err = _connect(host, port, self.config.auth)
+    local red_cli, err = _connect(host, port, self.config.password)
     if not red_cli then
         if err ~= 'connection refused' then
             return nil, nil, err
@@ -409,7 +409,7 @@ local function _commit(self, nodeidx, reqs)
 
         if #node.slave > 0 then
             host, port = node.slave[1][1], node.slave[1][2]
-            red_cli, err = _connect(host, port, self.config.auth)
+            red_cli, err = _connect(host, port, self.config.password)
             if not red_cli then
                 return nil, refetch, err
             end

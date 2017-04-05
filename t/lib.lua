@@ -35,7 +35,7 @@ function _M.ncluster()
             { "127.0.0.1", 7005 },
             { "127.0.0.1", 7006 },
         },
-        auth            = "abc",
+        password        = "abc",
         idle_timeout    = 1000,
         pool_size       = 200,
     }
