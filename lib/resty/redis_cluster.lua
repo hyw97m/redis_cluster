@@ -12,7 +12,7 @@ local str_len   = string.len
 local str_sub   = string.sub
 
 local concat    = table.concat
-local tbl_insert= table.insert
+local insert    = table.insert
 
 local ngx_log   = ngx.log
 local ERR       = ngx.ERR
@@ -190,11 +190,11 @@ local function _fetch_slots(self)
         cache_nodes[self.config.name] = {}
     end
 
-    if cache_nodes[self.config.name].lock and cache_nodes[self.config.name].lock < ngx.time() then
-        return true
+    if cache_nodes[self.config.name].lock and cache_nodes[self.config.name].lock > ngx.time() then
+        return false, "the node is being refreshed."
     end
 
-    cache_nodes[self.config.name].lock = ngx.time()
+    cache_nodes[self.config.name].lock = ngx.time() + 10
 
     local nodes, slots = {}, {}
     for _, server in ipairs(self.config.servers) do
@@ -229,6 +229,8 @@ local function _fetch_slots(self)
                     slots   = slots,
                 }
 
+                red_cli:set_keepalive(self.config.idle_timeout, self.config.pool_size)
+
                 return true
             else
                 ngx_log(WARN, tostring(err))
@@ -238,7 +240,7 @@ local function _fetch_slots(self)
         red_cli:set_keepalive(self.config.idle_timeout, self.config.pool_size)
     end
 
-    return nil, nil, "failed to init redis cluster"
+    return nil, "failed to init redis cluster"
 end
 
 
@@ -284,7 +286,7 @@ local function _do_retry(self, host, port, cmd, key, ...)
     return res, err
 end
 
-
+-- return res, err, refetch[1.2] or retry[2]
 local function _do_cmd(self, cmd, key, ...)
     if self._reqs then
         if not self[cmd] then
@@ -292,7 +294,7 @@ local function _do_cmd(self, cmd, key, ...)
         end
 
         self._group[#self._group + 1] = { size = 1 }
-        tbl_insert(self._reqs, { cmd = cmd, key = key, args = { ... } })
+        insert(self._reqs, { cmd = cmd, key = key, args = { ... } })
         return true
     end
 
@@ -302,41 +304,27 @@ local function _do_cmd(self, cmd, key, ...)
     local node = cache_nodes[self.config.name]["nodes"][nodeidx]
     local host, port = node.master[1], node.master[2]
 
-    local refetch
-
     local red_cli, err = _connect(host, port, self.config.password)
     if not red_cli then
-        if err ~= 'connection refused' then
-            return nil, err
-        end
-
-        refetch = true
-
-        if #node.slave > 0 then
-            host, port = node.slave[1][1], node.slave[1][2]
-            red_cli, err = _connect(host, port, self.config.password)
-            if not red_cli then
-                return nil, err
-            end
-        end
-    end
-
-    local res, err = red_cli[cmd](red_cli, key, ...)
-    if not res then
-        if err and str_sub(err, 1, 5) == "MOVED" then
-            refetch = true
+        if err == 'connection refused' then
+            return nil, err, 2
         end
 
         return nil, err
     end
 
-    red_cli:set_keepalive(self.config.idle_timeout, self.config.pool_size)
-
-    if refetch then
-        _fetch_slots(self)
+    local refetch
+    local res, err = red_cli[cmd](red_cli, key, ...)
+    if not res then
+        if err and str_sub(err, 1, 5) == "MOVED" then
+            refetch = 2
+        end
     end
 
-    return res, err
+    red_cli:set_keepalive(self.config.idle_timeout, self.config.pool_size)
+
+    return res, err, refetch
+
 end
 
 
@@ -345,11 +333,16 @@ for i = 1, #commands do
 
     _M[cmd] =
         function (self, ...)
-            local res, err
-            for i = 1, 2 do
-                res, err =_do_cmd(self, cmd, ...)
-                if res then
-                    break
+            local res, err, refetch =_do_cmd(self, cmd, ...)
+            if not res then
+                if refetch then
+                    if refetch > 0 then
+                        _fetch_slots(self)
+                    end
+
+                    if refetch == 2 then
+                        res, err =_do_cmd(self, cmd, ...)
+                    end
                 end
             end
 
@@ -393,6 +386,7 @@ local function merge(group, res)
 end
 
 
+-- return res, err, refetch[1.2] or retry[2]
 local function _commit(self, nodeidx, reqs)
     local node = cache_nodes[self.config.name]["nodes"][nodeidx]
     local host, port = node.master[1], node.master[2]
@@ -401,19 +395,11 @@ local function _commit(self, nodeidx, reqs)
 
     local red_cli, err = _connect(host, port, self.config.password)
     if not red_cli then
-        if err ~= 'connection refused' then
-            return nil, nil, err
+        if err == 'connection refused' then
+            return nil, err, 2
         end
 
-        refetch = true
-
-        if #node.slave > 0 then
-            host, port = node.slave[1][1], node.slave[1][2]
-            red_cli, err = _connect(host, port, self.config.password)
-            if not red_cli then
-                return nil, refetch, err
-            end
-        end
+        return nil, err
     end
 
     red_cli:init_pipeline()
@@ -426,8 +412,9 @@ local function _commit(self, nodeidx, reqs)
     end
 
     local result, err = red_cli:commit_pipeline()
+    red_cli:set_keepalive(self.config.idle_timeout, self.config.pool_size)
     if not result then
-        return nil, refetch, err
+        return nil, err
     end
 
     local ret = {}
@@ -448,15 +435,13 @@ local function _commit(self, nodeidx, reqs)
                 ret[i] = false
             end
 
-            refetch = true
+            refetch = 1
         else
             ret[i] = rs
         end
     end
 
-    red_cli:set_keepalive(self.config.idle_timeout, self.config.pool_size)
-
-    return ret, refetch
+    return ret, nil, refetch
 end
 
 
@@ -492,18 +477,24 @@ function _M.commit_pipeline(self)
     local ret = new_tab(0, #reqs)
 
     for nodeidx, item in pairs(map) do
-        local res, refetch, err = _commit(self, nodeidx, item.reqs)
+        local res, err, refetch = _commit(self, nodeidx, item.reqs)
+
+        if refetch then
+            if refetch > 0 then
+                _fetch_slots(self)
+            end
+
+            if refetch == 2 then
+                res, err = _commit(self, nodeidx, item.reqs)
+            end
+        end
+
         if not res then
             return nil, err
         end
 
         for i, idx in ipairs(item.idxs) do
             ret[idx] = res[i]
-        end
-
-        if refetch then
-            _fetch_slots(self)
-            refetch = nil
         end
     end
 
@@ -531,12 +522,12 @@ local function _do_mcmd(self, cmd, typ, ...)
     if typ == "update" then
         self._group[#self._group + 1] = { size = #args / 2, typ = typ }
         for i = 1, #args, 2 do
-            tbl_insert(self._reqs, { cmd = cmd, key = args[i], args = { args[i + 1] } })
+            insert(self._reqs, { cmd = cmd, key = args[i], args = { args[i + 1] } })
         end
     else
         self._group[#self._group + 1] = { size = #args, typ = typ }
         for _, key in ipairs(args) do
-            tbl_insert(self._reqs, { cmd = cmd, key = key })
+            insert(self._reqs, { cmd = cmd, key = key })
         end
     end
 
