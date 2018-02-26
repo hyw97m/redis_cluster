@@ -8,8 +8,9 @@ local band      = bit.band
 local lshift    = bit.lshift
 local rshift    = bit.rshift
 
-local str_len   = string.len
-local str_sub   = string.sub
+local len       = string.len
+local sub       = string.sub
+local format    = string.format
 
 local concat    = table.concat
 local insert    = table.insert
@@ -67,7 +68,7 @@ end
 
 local function keyhashslot(key)
     local s, e
-    local keylen = str_len(key)
+    local keylen = len(key)
     for i = 1, keylen do
         s = i
         if key:byte(s) == 123 then break end
@@ -85,7 +86,7 @@ local function keyhashslot(key)
     if e == keylen or e == s + 1 then
         return band(crc16(key), 0x3fff) + 1
     else
-        return band(crc16(str_sub(key, s + 1, e - 1)), 0x3fff) + 1
+        return band(crc16(sub(key, s + 1, e - 1)), 0x3fff) + 1
     end
 end
 
@@ -142,7 +143,7 @@ local commands = {
     --[["select",]]         "set",                  "setbit",
     "setex",                "setnx",                "setrange",
     --[["shutdown",]]       --[["sinter",]]         --[["sinterstore",]]
-    --[["sismember",]]      --[["slaveof",]]        --[["slowlog",]]
+    "sismember",            --[["slaveof",]]        --[["slowlog",]]
     "smembers",             --[["smove",]]          "sort",
     "spop",                 --[["srandmember",]]    "srem",
     "sscan",
@@ -161,11 +162,12 @@ local commands = {
 
 
 local mcommands = {
-    mset = { cmd = "set", typ = "update" },
-    mget = { cmd = "get", typ = "list" },
-    del  = { cmd = "del", typ = "incr" },
-    msetnx  = { cmd = "setnx", typ = "incr" },
+    mset = { cmd = "set" },
+    mget = { cmd = "get" },
+    del  = { cmd = "del" },
+    msetnx  = { cmd = "setnx" },
 }
+
 
 local cache_nodes = {}
 
@@ -174,6 +176,7 @@ local function _connect(host, port, password)
     local red_cli = redis:new()
     local ok, err = red_cli:connect(host, port)
     if not ok then
+        ngx_log(ERR, format("failed to connect, err: %s [%s:%s]", tostring(err), host, port))
         return nil, err
     end
 
@@ -196,32 +199,30 @@ local function _fetch_slots(self)
 
     cache_nodes[self.config.name].lock = ngx.time() + 10
 
-    local nodes, slots = {}, {}
+    local nodes, nidx = {}, 0
+    local slots = {}
     for _, server in ipairs(self.config.servers) do
-        local red_cli, err = _connect(server[1], server[2], self.config.password)
+        local host, port = server[1], server[2]
+        local red_cli, err = _connect(host, port, self.config.password)
         if not red_cli then
-            ngx_log(WARN, server[1], ":", server[2], ", err", tostring(err))
+            ngx_log(WARN, format("failed to connect, err: %s [%s:%s]", tostring(err), host, port))
+
         else
             local info, err = red_cli:cluster("slots")
             if info and type(info) == "table" and #info > 0 then
-                for i=1, #info do
-                    local nodeidx = #nodes + 1
+                for i = 1, #info do
+                    nidx = nidx + 1
                     local item = info[i]
                     local node = {
-                        master  = { item[3][1], item[3][2] },
-                        slave   = { }
+                        host = item[3][1],
+                        port = item[3][2],
                     }
 
-                    for j = 4, #item do
-                        local slaveidx = #node["slave"] + 1
-                        node["slave"][slaveidx] = { item[j][1], item[j][2] }
-                    end
-
                     for slot = item[1], item[2] do
-                        slots[slot + 1] = nodeidx
+                        slots[slot + 1] = nidx
                     end
 
-                    nodes[nodeidx] = node
+                    nodes[nidx] = node
                 end
 
                 cache_nodes[self.config.name] = {
@@ -233,12 +234,14 @@ local function _fetch_slots(self)
 
                 return true
             else
-                ngx_log(WARN, tostring(err))
+                ngx_log(WARN, format("failed to fetch slots, err: %s [%s:%s]", tostring(err), host, port))
+
             end
         end
 
         red_cli:set_keepalive(self.config.idle_timeout, self.config.pool_size)
     end
+
 
     return nil, "failed to init redis cluster"
 end
@@ -293,18 +296,23 @@ local function _do_cmd(self, cmd, key, ...)
             return nil, "nofound cmd"
         end
 
-        self._group[#self._group + 1] = { size = 1 }
-        insert(self._reqs, { cmd = cmd, key = key, args = { ... } })
+        local args = ... and { ... } or nil
+
+        self._group_n = self._group_n + 1
+        self._group[self._group_n] = { size = 1 }
+
+        self._reqs_n = self._reqs_n + 1
+        self._reqs[self._reqs_n] = { cmd = cmd, key = key, args = args }
+
         return true
     end
 
     local slots = cache_nodes[self.config.name]["slots"]
     local slot = keyhashslot(key)
-    local nodeidx = slots[slot]
-    local node = cache_nodes[self.config.name]["nodes"][nodeidx]
-    local host, port = node.master[1], node.master[2]
+    local nidx = slots[slot]
+    local node = cache_nodes[self.config.name]["nodes"][nidx]
 
-    local red_cli, err = _connect(host, port, self.config.password)
+    local red_cli, err = _connect(node.host, node.port, self.config.password)
     if not red_cli then
         if err == 'connection refused' then
             return nil, err, 2
@@ -316,7 +324,7 @@ local function _do_cmd(self, cmd, key, ...)
     local refetch
     local res, err = red_cli[cmd](red_cli, key, ...)
     if not res then
-        if err and str_sub(err, 1, 5) == "MOVED" then
+        if err and sub(err, 1, 5) == "MOVED" then
             refetch = 2
         end
     end
@@ -352,26 +360,27 @@ end
 
 
 function _M.init_pipeline(self)
-    self._reqs = {}
-    self._group = {}
+    self._reqs,  self._reqs_n  = {}, 0
+    self._group, self._group_n = {}, 0
 end
 
 
-local function merge(group, res)
-    local ret = {}
+local function _merge(group, res)
+    local ret, n = {}, 0
     local pp = 0
     for _, item in ipairs(group) do
-        local data
-        if item.typ == "incr" then
+        local data, m
+        if item.mcmd == "del" then
             data = 0
             for cp = pp + 1, pp + item.size do
                 data = data + ((res[cp] == false) and 0 or res[cp])
             end
 
-        elseif item.typ == "update" or item.typ == "list" then
-            data = {}
+        elseif item.mcmd == "mset" or item.mcmd == "msetnx" or item.mcmd == "mget" then
+            data, m = {}, 0
             for cp = pp + 1, pp + item.size do
-                data[#data + 1] = res[cp]
+                m = m + 1
+                data[m] = res[cp]
             end
 
         else
@@ -379,7 +388,8 @@ local function merge(group, res)
         end
 
         pp = pp + item.size
-        ret[#ret + 1] = data
+        n = n + 1
+        ret[n] = data
     end
 
     return ret
@@ -387,13 +397,12 @@ end
 
 
 -- return res, err, refetch[1.2] or retry[2]
-local function _commit(self, nodeidx, reqs)
-    local node = cache_nodes[self.config.name]["nodes"][nodeidx]
-    local host, port = node.master[1], node.master[2]
+local function _commit(self, nidx, reqs)
+    local node = cache_nodes[self.config.name]["nodes"][nidx]
 
     local refetch
 
-    local red_cli, err = _connect(host, port, self.config.password)
+    local red_cli, err = _connect(node.host, node.port, self.config.password)
     if not red_cli then
         if err == 'connection refused' then
             return nil, err, 2
@@ -404,7 +413,7 @@ local function _commit(self, nodeidx, reqs)
 
     red_cli:init_pipeline()
     for _, req in pairs(reqs) do
-        if req.args and #req.args > 0 then
+        if req.args then
             red_cli[req.cmd](red_cli, req.key, unpack(req.args))
         else
             red_cli[req.cmd](red_cli, req.key)
@@ -420,11 +429,11 @@ local function _commit(self, nodeidx, reqs)
     local ret = {}
 
     for i, rs in ipairs(result) do
-        if type(rs) == "table" and rs[1] == false and str_sub(rs[2], 1, 5) == "MOVED" then
+        if type(rs) == "table" and rs[1] == false and sub(rs[2], 1, 5) == "MOVED" then
             local m, err = ngx.re.match(rs[2], "MOVED [0-9]+ ([0-9.]+):([0-9]+)")
             if type(m) == "table" then
                 local res, err
-                if reqs[i].args and #reqs[i].args > 0 then
+                if reqs[i].args then
                     res, err = _do_retry(self, m[1], m[2], reqs[i].cmd, reqs[i].key, unpack(reqs[i].args))
                 else
                     res, err = _do_retry(self, m[1], m[2], reqs[i].cmd, reqs[i].key)
@@ -454,30 +463,28 @@ function _M.commit_pipeline(self)
 
     local refetch
 
-    self._reqs = nil
-    self._group = nil
+    self._reqs,  self._reqs_n  = nil, nil
+    self._group, self._group_n = nil, nil
 
     local slots = cache_nodes[self.config.name]["slots"]
 
     local map = {}
     for idx, req in ipairs(reqs) do
         local slot = keyhashslot(req.key)
-        local nodeidx = slots[slot]
+        local nidx = slots[slot]
 
-        if not map[nodeidx] then
-            map[nodeidx] = { nodeidx = nodeidx, reqs = {}, idxs = {} }
+        if not map[nidx] then
+            map[nidx] = { nidx = nidx, reqs = {}, idxs = {} }
         end
 
-        local mreqs = map[nodeidx].reqs
-        local midxs = map[nodeidx].idxs
-        mreqs[#mreqs + 1] = req
-        midxs[#midxs + 1] = idx
+        local mreqs, midxs = map[nidx].reqs, map[nidx].idxs
+        mreqs[#mreqs + 1], midxs[#midxs + 1] = req, idx
     end
 
     local ret = new_tab(0, #reqs)
 
-    for nodeidx, item in pairs(map) do
-        local res, err, refetch = _commit(self, nodeidx, item.reqs)
+    for nidx, item in pairs(map) do
+        local res, err, refetch = _commit(self, nidx, item.reqs)
 
         if refetch then
             if refetch > 0 then
@@ -485,7 +492,7 @@ function _M.commit_pipeline(self)
             end
 
             if refetch == 2 then
-                res, err = _commit(self, nodeidx, item.reqs)
+                res, err = _commit(self, nidx, item.reqs)
             end
         end
 
@@ -499,7 +506,7 @@ function _M.commit_pipeline(self)
     end
 
     if #group > 0 then
-        ret = merge(group, ret)
+        ret = _merge(group, ret)
     end
 
     return ret
@@ -507,28 +514,38 @@ end
 
 
 function _M.cancel_pipeline(self)
-    self._reqs = nil
-    self._group = nil
+    self._reqs,  self._reqs_n  = nil, nil
+    self._group, self._group_n = nil, nil
 end
 
 
-local function _do_mcmd(self, cmd, typ, ...)
+local function _do_mcmd(self, mcmd, cmd, ...)
     local pipeline = self._reqs and true or nil
     if not pipeline then
         _M.init_pipeline(self)
     end
 
     local args = { ... }
-    if typ == "update" then
-        self._group[#self._group + 1] = { size = #args / 2, typ = typ }
-        for i = 1, #args, 2 do
-            insert(self._reqs, { cmd = cmd, key = args[i], args = { args[i + 1] } })
-        end
-    else
-        self._group[#self._group + 1] = { size = #args, typ = typ }
-        for _, key in ipairs(args) do
-            insert(self._reqs, { cmd = cmd, key = key })
-        end
+    local decompose_size = 1
+    if mcmd == "mset" or mcmd == "msetnx" then
+        decompose_size = 2
+    end
+
+    self._group_n = self._group_n + 1
+    self._group[self._group_n] = {
+        size = #args / decompose_size,
+        -- decompose_size = decompose_size,
+        mcmd = mcmd,
+        -- cmd  = cmd,
+    }
+
+    for i = 1, #args, decompose_size do
+        self._reqs_n = self._reqs_n + 1
+        self._reqs[self._reqs_n] = {
+            cmd  = cmd,
+            key  = args[i],
+            args = decompose_size > 1 and { args[i + 1] }
+        }
     end
 
     if not pipeline then
@@ -544,13 +561,13 @@ end
 
 for mcmd, item in pairs(mcommands) do
     local cmd = item.cmd
-    local typ = item.typ
 
     _M[mcmd] =
         function (self, ...)
-            return _do_mcmd(self, cmd, typ, ...)
+            return _do_mcmd(self, mcmd, cmd, ...)
         end
 end
 
 
 return _M
+

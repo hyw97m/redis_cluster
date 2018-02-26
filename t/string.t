@@ -140,7 +140,7 @@ GET /t
 [error]
 
 
-=== TEST 4: mset, mget
+=== TEST 4: mset, mget, del, msetnx
 --- http_config eval: $::HttpConfig
 --- config
     location /t {
@@ -162,7 +162,9 @@ GET /t
             local res1_2, err = redcli:mget(key1)
             local res1_3, err = redcli:mget(key1, key2, key3)
             local res1_4, err = redcli:del(key1, key2, key3, key4)
-            local res1_5, err = redcli:mget(key1, key2, key3)
+            local res1_5, err = redcli:del(key1, key2, key3)
+            local res1_6, err = redcli:mget(key1, key2, key3)
+            local res1_7, err = redcli:msetnx(key1, val1, key2, val2, key3, val3)
 
             local redcli = lib.ncluster()
             redcli:del(key1, key2, key3, key4)
@@ -170,13 +172,17 @@ GET /t
             local res2_2, err = redcli:mget(key1)
             local res2_3, err = redcli:mget(key1, key2, key3)
             local res2_4, err = redcli:del(key1, key2, key3, key4)
-            local res2_5, err = redcli:mget(key1, key2, key3)
+            local res2_5, err = redcli:del(key1, key2, key3)
+            local res2_6, err = redcli:mget(key1, key2, key3)
+            local res2_7, err = redcli:msetnx(key1, val1, key2, val2, key3, val3)
 
             ngx.say(lib.chktab(res1_1, res2_1, true))
             ngx.say(lib.chktab(res1_2, res2_2, true))
             ngx.say(lib.chktab(res1_3, res2_3, true))
             ngx.say(lib.chktab(res1_4, res2_4, true))
             ngx.say(lib.chktab(res1_5, res2_5, true))
+            ngx.say(lib.chktab(res1_6, res2_6, true))
+            ngx.say(lib.chktab(res1_7, res2_7, true))
 
         }
     }
@@ -187,7 +193,9 @@ GET /t
 ["123"] ["123"] true
 ["123","456","789"] ["123","456","789"] true
 3 3 true
+0 0 true
 [null,null,null] [null,null,null] true
+1 [1,1,1] false
 --- no_error_log
 [error]
 

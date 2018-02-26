@@ -43,6 +43,7 @@ function _M.ncluster()
     return rediscluster:new(config)
 end
 
+
 function _M.chktab(tab1, tab2, flag)
     local str1 = json_encode(tab1)
     local str2 = json_encode(tab2)
