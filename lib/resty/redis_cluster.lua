@@ -10,14 +10,20 @@ local rshift    = bit.rshift
 
 local len       = string.len
 local sub       = string.sub
+local gsub      = string.gsub
 local format    = string.format
 
 local concat    = table.concat
 local insert    = table.insert
 
+local seed      = math.randomseed
+local random    = math.random
+
 local ngx_log   = ngx.log
 local ERR       = ngx.ERR
 local WARN      = ngx.WARN
+
+local now       = ngx.now
 
 
 local crc16tab  = {
@@ -70,24 +76,19 @@ local function keyhashslot(key)
     local s, e
     local keylen = len(key)
     for i = 1, keylen do
-        s = i
-        if key:byte(s) == 123 then break end
+        if not s and key:byte(i) == 123 then
+            s = i
+        elseif key:byte(i) == 125 then
+            e = i
+            break
+        end
     end
 
-    if s == keylen then
-        return band(crc16(key), 0x3fff) + 1
-    end
-
-    for i = s + 1, keylen do
-        e = i
-        if key:byte(e) == 125 then break end
-    end
-
-    if e == keylen or e == s + 1 then
-        return band(crc16(key), 0x3fff) + 1
-    else
+    if s and e and e > s + 1 then
         return band(crc16(sub(key, s + 1, e - 1)), 0x3fff) + 1
     end
+
+    return band(crc16(key), 0x3fff) + 1
 end
 
 
@@ -117,7 +118,7 @@ local commands = {
     "hexists",              "hget",                 "hgetall",
     "hincrby",              "hincrbyfloat",         "hkeys",
     "hlen",
-    "hmget",                "hmset",                --[["hscan",]]
+    "hmget",                "hmset",                "hscan",
     "hset",
     "hsetnx",               "hvals",                "incr",
     "incrby",               "incrbyfloat",          --[["info",]]
@@ -188,24 +189,54 @@ local function _connect(host, port, password)
 end
 
 
+
+local function _fetch_servers(self)
+    local i = 0
+    local srvsize = #self.config.servers
+    seed(gsub(now(),"[.]",""):reverse():sub(1, 7))
+    local offset = random(1, srvsize * 3)
+
+    return function ()
+        i = i + 1
+        if i > srvsize then
+            return
+        end
+
+        local idx = (i + offset) % srvsize + 1
+        return self.config.servers[idx]
+    end
+
+end
+
 local function _fetch_slots(self)
     if not cache_nodes[self.config.name] then
         cache_nodes[self.config.name] = {}
     end
 
-    if cache_nodes[self.config.name].lock and cache_nodes[self.config.name].lock > ngx.time() then
-        return false, "the node is being refreshed."
+    local st = now()
+    if cache_nodes[self.config.name].lock and cache_nodes[self.config.name].lock > st then
+
+        while true do
+            ngx.sleep(0.1)
+            if cache_nodes[self.config.name].lock then
+                if now() - st > 1 then
+                    return false, "the node is being refreshed."
+                end
+            else
+                return true
+            end
+        end
     end
 
     cache_nodes[self.config.name].lock = ngx.time() + 10
 
     local nodes, nidx = {}, 0
     local slots = {}
-    for _, server in ipairs(self.config.servers) do
+    for server in _fetch_servers(self) do
         local host, port = server[1], server[2]
         local red_cli, err = _connect(host, port, self.config.password)
         if not red_cli then
-            ngx_log(WARN, format("failed to connect, err: %s [%s:%s]", tostring(err), host, port))
+            ngx_log(ERR, format("failed to connect, err: %s [%s:%s]", tostring(err), host, port))
 
         else
             local info, err = red_cli:cluster("slots")
@@ -216,9 +247,11 @@ local function _fetch_slots(self)
                     local node = {
                         host = item[3][1],
                         port = item[3][2],
+                        s_slot = item[1],
+                        e_slot = item[2],
                     }
 
-                    for slot = item[1], item[2] do
+                    for slot = node.s_slot, node.e_slot do
                         slots[slot + 1] = nidx
                     end
 
@@ -231,10 +264,13 @@ local function _fetch_slots(self)
                 }
 
                 red_cli:set_keepalive(self.config.idle_timeout, self.config.pool_size)
+                cache_nodes[self.config.name].lock = nil
+
+                -- ngx_log(ERR, format("fetch success slots, time: ", now() - st))
 
                 return true
             else
-                ngx_log(WARN, format("failed to fetch slots, err: %s [%s:%s]", tostring(err), host, port))
+                ngx_log(ERR, format("failed to fetch slots, err: %s [%s:%s]", tostring(err), host, port))
 
             end
         end
@@ -253,14 +289,14 @@ local _M = {}
 function _M.new(self, conf)
     local config = {
         name    = conf.name or "dev",
-        servers = conf.server,
+        servers = conf.servers,
         password= conf.password,
         idle_timeout= conf.idle_timeout or 1000,
         pool_size   = conf.pool_size or 100,
     }
 
-    local mt = setmetatable({ config = config, link = {} }, { __index = _M })
-    if not cache_nodes[config.name] then
+    local mt = setmetatable({ config = config }, { __index = _M })
+    if not cache_nodes[config.name] or not cache_nodes[config.name].nodes then
         local ok, err = _fetch_slots(mt)
         if not ok then
             return nil, err
@@ -268,6 +304,13 @@ function _M.new(self, conf)
     end
 
     return mt
+end
+
+
+_M.keyhashslot = keyhashslot
+
+function _M.fetch_nodes(self)
+    return cache_nodes[self.config.name]["nodes"]
 end
 
 
