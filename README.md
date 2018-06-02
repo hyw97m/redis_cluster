@@ -17,7 +17,7 @@ server {
             local rediscluster = require "resty.redis_cluster"
             local config = {
                 name = "name",
-                server = {
+                servers = {
                     { "127.0.0.1", 7001 },
                     { "127.0.0.1", 7002 },
                     { "127.0.0.1", 7003 },
@@ -75,7 +75,7 @@ server {
 
     集群名, 用于区别多个集群的使用
 
-*   `server`
+*   `servers
 
     服务列表, 如: {{"127.0.0.1", 7001}, {"127.0.0.1", 7002}}
 
