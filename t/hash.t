@@ -35,9 +35,9 @@ __DATA__
             local lib = require "t.lib"
             local json_encode   = require("cjson").encode
 
-            local redcli = lib.ncli()
+            -- local redcli = lib.ncli()
             local redcli = lib.ncluster()
-            redcli:hset("hkey", "field1", 123)
+            local ok ,err = redcli:hset("hkey", "field1", 123)
             redcli:hset("hkey", "field2", "abc")
             local res, err = redcli:hget("hkey", "field1")
             ngx.say(res)

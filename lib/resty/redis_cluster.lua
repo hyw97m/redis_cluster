@@ -19,6 +19,9 @@ local insert    = table.insert
 local seed      = math.randomseed
 local random    = math.random
 
+local timer_at  = ngx.timer.at
+local exiting   = ngx.worker.exiting
+
 local ngx_log   = ngx.log
 local ERR       = ngx.ERR
 local WARN      = ngx.WARN
@@ -103,62 +106,71 @@ redis.add_commands("cluster")
 
 
 local commands = {
-    "append",               --[["auth",]]           --[["bgrewriteaof",]]
-    --[["bgsave",]]         "bitcount",             --[["bitop",]]
-    "blpop",                "brpop",
-    --[["brpoplpush",]]     --[["client",]]         --[["config",]]
-    --[["dbsize",]]
-    --[["debug",]]          "decr",                 "decrby",
-    --[["del",]]            --[["discard",]]        --[["dump",]]
-    --[["echo",]]
-    --[["eval",]]           --[["exec",]]           "exists",
-    "expire",               "expireat",             --[["flushall",]]
-    --[["flushdb",]]        "get",                  "getbit",
-    "getrange",             "getset",               "hdel",
-    "hexists",              "hget",                 "hgetall",
-    "hincrby",              "hincrbyfloat",         "hkeys",
-    "hlen",
-    "hmget",                "hmset",                "hscan",
-    "hset",
-    "hsetnx",               "hvals",                "incr",
-    "incrby",               "incrbyfloat",          --[["info",]]
-    --[["keys",]]
-    --[["lastsave",]]       "lindex",               "linsert",
-    "llen",                 "lpop",                 "lpush",
-    "lpushx",               "lrange",               "lrem",
-    "lset",                 "ltrim",                --[["mget",]]
-    --[["migrate",]]
-    --[["monitor",]]        --[["move",]]           --[["mset",]]
-    --[["msetnx",]]         --[["multi",]]          --[["object",]]
-    "persist",              "pexpire",              "pexpireat",
-    --[["ping",]]           "psetex",               --[["psubscribe",]]
-    "pttl",
-    --[["publish",]]        --[["punsubscribe",]]   --[["pubsub",]]
-    --[["quit",]]
-    --[["randomkey",]]      --[["rename",]]         --[["renamenx",]]
-    --[["restore",]]
-    "rpop",                 --[["rpoplpush",]]      "rpush",
-    "rpushx",               "sadd",                 --[["save",]]
-    "scan",                 "scard",                --[["script",]]
-    --[["sdiff",]]          --[["sdiffstore",]]
-    --[["select",]]         "set",                  "setbit",
-    "setex",                "setnx",                "setrange",
-    --[["shutdown",]]       --[["sinter",]]         --[["sinterstore",]]
-    "sismember",            --[["slaveof",]]        --[["slowlog",]]
-    "smembers",             --[["smove",]]          "sort",
-    "spop",                 --[["srandmember",]]    "srem",
-    "sscan",
-    --[["strlen",]]         --[["subscribe",]]      --[["sunion",]]
-    --[["sunionstore",]]    --[["sync",]]           --[["time",]]
-    "ttl",
-    --[["type",]]           --[["unsubscribe",]]    --[["unwatch",]]
-    --[["watch",]]          "zadd",                 "zcard",
-    "zcount",               "zincrby",              --[["zinterstore",]]
-    "zrange",               "zrangebyscore",        "zrank",
-    "zrem",                 "zremrangebyrank",      "zremrangebyscore",
-    "zrevrange",            "zrevrangebyscore",     "zrevrank",
-    --[["zscan",]]
-    "zscore",               --[["zunionstore",]]    --[["evalsha"]]
+    [1] = {
+        "append",               --[["auth",]]           --[["bgrewriteaof",]]
+        --[["bgsave",]]         "bitcount",             --[["bitop",]]
+        "blpop",                "brpop",
+        --[["brpoplpush",]]     --[["client",]]         --[["config",]]
+        --[["dbsize",]]
+        --[["debug",]]          "decr",                 "decrby",
+        --[["del",]]            --[["discard",]]        --[["dump",]]
+        --[["echo",]]
+        --[["exec",]]           "exists",
+        "expire",               "expireat",             --[["flushall",]]
+        --[["flushdb",]]        "get",                  "getbit",
+        "getrange",             "getset",               "hdel",
+        "hexists",              "hget",                 "hgetall",
+        "hincrby",              "hincrbyfloat",         "hkeys",
+        "hlen",
+        "hmget",                "hmset",                "hscan",
+        "hset",
+        "hsetnx",               "hvals",                "incr",
+        "incrby",               "incrbyfloat",          --[["info",]]
+        --[["keys",]]
+        --[["lastsave",]]       "lindex",               "linsert",
+        "llen",                 "lpop",                 "lpush",
+        "lpushx",               "lrange",               "lrem",
+        "lset",                 "ltrim",                --[["mget",]]
+        --[["migrate",]]
+        --[["monitor",]]        --[["move",]]           --[["mset",]]
+        --[["msetnx",]]         --[["multi",]]          --[["object",]]
+        "persist",              "pexpire",              "pexpireat",
+        --[["ping",]]           "psetex",               --[["psubscribe",]]
+        "pttl",
+        --[["publish",]]        --[["punsubscribe",]]   --[["pubsub",]]
+        --[["quit",]]
+        --[["randomkey",]]      --[["rename",]]         --[["renamenx",]]
+        --[["restore",]]
+        "rpop",                 --[["rpoplpush",]]      "rpush",
+        "rpushx",               "sadd",                 --[["save",]]
+        "scan",                 "scard",                --[["script",]]
+        --[["sdiff",]]          --[["sdiffstore",]]
+        --[["select",]]         "set",                  "setbit",
+        "setex",                "setnx",                "setrange",
+        --[["shutdown",]]       --[["sinter",]]         --[["sinterstore",]]
+        "sismember",            --[["slaveof",]]        --[["slowlog",]]
+        "smembers",             --[["smove",]]          "sort",
+        "spop",                 --[["srandmember",]]    "srem",
+        "sscan",
+        --[["strlen",]]         --[["subscribe",]]      --[["sunion",]]
+        --[["sunionstore",]]    --[["sync",]]           --[["time",]]
+        "ttl",
+        --[["type",]]           --[["unsubscribe",]]    --[["unwatch",]]
+        --[["watch",]]          "zadd",                 "zcard",
+        "zcount",               "zincrby",              --[["zinterstore",]]
+        "zrange",               "zrangebyscore",        "zrank",
+        "zrem",                 "zremrangebyrank",      "zremrangebyscore",
+        "zrevrange",            "zrevrangebyscore",     "zrevrank",
+        --[["zscan",]]
+        "zscore",               --[["zunionstore",]]
+    },
+    [2] = { },
+    [3] = {
+        "eval",     "evalsha"
+    },
+    [4] = {
+        "script",
+    },
 }
 
 
@@ -173,28 +185,40 @@ local mcommands = {
 local cache_nodes = {}
 
 
-local function _connect(host, port, password)
+local function _connect(host, port, password, timeout)
     local red_cli = redis:new()
+
+    -- ngx_log(ERR, concat({host, port, tostring(password), tostring(timeout)}, ", "))
+    red_cli:set_timeout(timeout or 3000)
+
+    local st = now()
     local ok, err = red_cli:connect(host, port)
     if not ok then
-        ngx_log(ERR, format("failed to connect, err: %s [%s:%s]", tostring(err), host, port))
+        ngx_log(ERR, format("failed to connect, err: %s [%s:%s], t: %s", tostring(err), host, port, now() - st))
         return nil, err
     end
 
     if password then
         ok, err = red_cli:auth(password)
+        if not ok then
+            ngx_log(ERR, format("failed to auth, err: %s [%s:%s]", tostring(err), host, port))
+        end
     end
 
     return red_cli, err
 end
 
 
+local function _random(min, max)
+    seed(gsub(now(),"[.]",""):reverse():sub(1, 7))
+    return random(min, max)
+end
+
 
 local function _fetch_servers(self)
     local i = 0
     local srvsize = #self.config.servers
-    seed(gsub(now(),"[.]",""):reverse():sub(1, 7))
-    local offset = random(1, srvsize * 3)
+    local offset = _random(1, srvsize * 3)
 
     return function ()
         i = i + 1
@@ -205,20 +229,28 @@ local function _fetch_servers(self)
         local idx = (i + offset) % srvsize + 1
         return self.config.servers[idx]
     end
-
 end
 
-local function _fetch_slots(self)
-    if not cache_nodes[self.config.name] then
-        cache_nodes[self.config.name] = {}
+
+local function _fetch_slots(self, async)
+    local cluster_name = self.config.name
+    if not cache_nodes[cluster_name] then
+        cache_nodes[cluster_name] = {}
     end
 
     local st = now()
-    if cache_nodes[self.config.name].lock and cache_nodes[self.config.name].lock > st then
+    if cache_nodes[cluster_name].lock and cache_nodes[cluster_name].lock > st then
+        if async then
+            return
+        end
+
+        if cache_nodes[cluster_name].down then
+            return nil, "CLUSTERDOWN the cluster is down"
+        end
 
         while true do
             ngx.sleep(0.1)
-            if cache_nodes[self.config.name].lock then
+            if cache_nodes[cluster_name].lock then
                 if now() - st > 1 then
                     return false, "the node is being refreshed."
                 end
@@ -228,18 +260,20 @@ local function _fetch_slots(self)
         end
     end
 
-    cache_nodes[self.config.name].lock = ngx.time() + 10
+    cache_nodes[cluster_name].lock = ngx.time() + 5
 
     local nodes, nidx = {}, 0
     local slots = {}
     for server in _fetch_servers(self) do
         local host, port = server[1], server[2]
-        local red_cli, err = _connect(host, port, self.config.password)
+        local red_cli, err = _connect(host, port, self.config.password, self.config.timeout)
         if not red_cli then
             ngx_log(ERR, format("failed to connect, err: %s [%s:%s]", tostring(err), host, port))
 
         else
             local info, err = red_cli:cluster("slots")
+            red_cli:set_keepalive(self.config.idle_timeout, self.config.pool_size)
+
             if info and type(info) == "table" and #info > 0 then
                 for i = 1, #info do
                     nidx = nidx + 1
@@ -258,13 +292,14 @@ local function _fetch_slots(self)
                     nodes[nidx] = node
                 end
 
-                cache_nodes[self.config.name] = {
+                cache_nodes[cluster_name] = {
                     nodes   = nodes,
+                    node_num= #nodes,
                     slots   = slots,
                 }
 
-                red_cli:set_keepalive(self.config.idle_timeout, self.config.pool_size)
-                cache_nodes[self.config.name].lock = nil
+                cache_nodes[cluster_name].lock = nil
+                cache_nodes[cluster_name].down = nil
 
                 -- ngx_log(ERR, format("fetch success slots, time: ", now() - st))
 
@@ -273,13 +308,31 @@ local function _fetch_slots(self)
                 ngx_log(ERR, format("failed to fetch slots, err: %s [%s:%s]", tostring(err), host, port))
 
             end
-        end
 
-        red_cli:set_keepalive(self.config.idle_timeout, self.config.pool_size)
+        end
     end
 
+    cache_nodes[cluster_name].lock = nil
+    cache_nodes[cluster_name].down = true
 
-    return nil, "failed to init redis cluster"
+    return nil, "CLUSTERDOWN the cluster is down"
+end
+
+
+local function _async_fetch_slots(self)
+    local handler = function(premature)
+        if premature or exiting() then
+            return
+        end
+
+        _fetch_slots(self, true)
+    end
+
+    local ok, err = timer_at(0, handler)
+    if not ok then
+        ngx_log(ERR, "failed to create timer: ", err)
+        return
+    end
 end
 
 
@@ -291,12 +344,15 @@ function _M.new(self, conf)
         name    = conf.name or "dev",
         servers = conf.servers,
         password= conf.password,
+        timeout = conf.timeout or 3000,
         idle_timeout= conf.idle_timeout or 1000,
         pool_size   = conf.pool_size or 100,
     }
 
     local mt = setmetatable({ config = config }, { __index = _M })
-    if not cache_nodes[config.name] or not cache_nodes[config.name].nodes then
+
+    local ns = cache_nodes[config.name]
+    if not ns or not ns.nodes or ns.down then
         local ok, err = _fetch_slots(mt)
         if not ok then
             return nil, err
@@ -307,7 +363,10 @@ function _M.new(self, conf)
 end
 
 
-_M.keyhashslot = keyhashslot
+function _M.keyhashslot(key)
+    return keyhashslot(key) - 1
+end
+
 
 function _M.fetch_nodes(self)
     return cache_nodes[self.config.name]["nodes"]
@@ -315,7 +374,7 @@ end
 
 
 local function _do_retry(self, host, port, cmd, key, ...)
-    local red_cli, err = _connect(host, port, self.config.password)
+    local red_cli, err = _connect(host, port, self.config.password, self.config.timeout)
     if not red_cli then
         return nil, err
     end
@@ -332,73 +391,96 @@ local function _do_retry(self, host, port, cmd, key, ...)
     return res, err
 end
 
--- return res, err, refetch[1.2] or retry[2]
-local function _do_cmd(self, cmd, key, ...)
+-- return res, err, errcode[1.2] or retry[2]
+local function _do_cmd(self, keypos, cmd, ...)
+    local args = { ... }
+
     if self._reqs then
         if not self[cmd] then
             return nil, "nofound cmd"
         end
 
-        local args = ... and { ... } or nil
-
         self._group_n = self._group_n + 1
         self._group[self._group_n] = { size = 1 }
 
         self._reqs_n = self._reqs_n + 1
-        self._reqs[self._reqs_n] = { cmd = cmd, key = key, args = args }
+        self._reqs[self._reqs_n] = { cmd = cmd, keypos = keypos, args = args }
 
         return true
     end
 
     local slots = cache_nodes[self.config.name]["slots"]
-    local slot = keyhashslot(key)
-    local nidx = slots[slot]
-    local node = cache_nodes[self.config.name]["nodes"][nidx]
-
-    local red_cli, err = _connect(node.host, node.port, self.config.password)
-    if not red_cli then
-        if err == 'connection refused' then
-            return nil, err, 2
+    local nidxs = {}
+    if keypos == 3 then
+        local keynum = tonumber(args[2])
+        if keynum and keynum > 0 then
+            local slot = keyhashslot(args[3])
+            nidxs[1] = slots[slot]
+        else
+            local node_num = cache_nodes[self.config.name].node_num
+            nidxs[1] = _random(1, node_num * 3) % node_num + 1
         end
-
-        return nil, err
+    elseif keypos == 4 then
+        for i = 1, cache_nodes[self.config.name].node_num do
+            nidxs[i] = i
+        end
+    else
+        local slot = keyhashslot(args[1])
+        nidxs[1] = slots[slot]
     end
 
-    local refetch
-    local res, err = red_cli[cmd](red_cli, key, ...)
-    if not res then
-        if err and sub(err, 1, 5) == "MOVED" then
-            refetch = 2
+    local res, errcode = {}, nil
+    for i, nidx in ipairs(nidxs) do
+        local node = cache_nodes[self.config.name]["nodes"][nidx]
+
+        local red_cli, err = _connect(node.host, node.port, self.config.password, self.config.timeout)
+        if not red_cli then
+            return nil, err, 1
         end
+
+        local rs, err = red_cli[cmd](red_cli, ...)
+        if not rs then
+            if err and sub(err, 1, 5) == "MOVED" then
+                errcode = 2
+            end
+        end
+
+        res[i] = {result = rs, err = err}
+
+        red_cli:set_keepalive(self.config.idle_timeout, self.config.pool_size)
     end
 
-    red_cli:set_keepalive(self.config.idle_timeout, self.config.pool_size)
+    if keypos == 4 then
+        local ret
+        for i, nidx in ipairs(nidxs) do
+            if res[i].result then
+                ret = res[i].result
+            end
+        end
 
-    return res, err, refetch
+        return ret, res, errcode
+    end
 
+    return res[1].result, res[1].err, errcode
 end
 
 
-for i = 1, #commands do
-    local cmd = commands[i]
+for keypos, cmds in pairs(commands) do
+    for i = 1, #cmds do
+        local cmd = cmds[i]
 
-    _M[cmd] =
+        _M[cmd] =
         function (self, ...)
-            local res, err, refetch =_do_cmd(self, cmd, ...)
+            local res, err, errcode =_do_cmd(self, keypos, cmd, ...)
             if not res then
-                if refetch then
-                    if refetch > 0 then
-                        _fetch_slots(self)
-                    end
-
-                    if refetch == 2 then
-                        res, err =_do_cmd(self, cmd, ...)
-                    end
+                if errcode and errcode > 0 then
+                    _async_fetch_slots(self)
                 end
             end
 
             return res, err
         end
+    end
 end
 
 
@@ -439,28 +521,20 @@ local function _merge(group, res)
 end
 
 
--- return res, err, refetch[1.2] or retry[2]
+-- return res, err, errcode[1.2] or retry[2]
 local function _commit(self, nidx, reqs)
     local node = cache_nodes[self.config.name]["nodes"][nidx]
 
-    local refetch
+    local errcode
 
-    local red_cli, err = _connect(node.host, node.port, self.config.password)
+    local red_cli, err = _connect(node.host, node.port, self.config.password, self.config.timeout)
     if not red_cli then
-        if err == 'connection refused' then
-            return nil, err, 2
-        end
-
-        return nil, err
+        return nil, err, 1
     end
 
     red_cli:init_pipeline()
     for _, req in pairs(reqs) do
-        if req.args then
-            red_cli[req.cmd](red_cli, req.key, unpack(req.args))
-        else
-            red_cli[req.cmd](red_cli, req.key)
-        end
+        red_cli[req.cmd](red_cli, unpack(req.args))
     end
 
     local result, err = red_cli:commit_pipeline()
@@ -475,25 +549,20 @@ local function _commit(self, nidx, reqs)
         if type(rs) == "table" and rs[1] == false and sub(rs[2], 1, 5) == "MOVED" then
             local m, err = ngx.re.match(rs[2], "MOVED [0-9]+ ([0-9.]+):([0-9]+)")
             if type(m) == "table" then
-                local res, err
-                if reqs[i].args then
-                    res, err = _do_retry(self, m[1], m[2], reqs[i].cmd, reqs[i].key, unpack(reqs[i].args))
-                else
-                    res, err = _do_retry(self, m[1], m[2], reqs[i].cmd, reqs[i].key)
-                end
+                local res, err = _do_retry(self, m[1], m[2], reqs[i].cmd, unpack(reqs[i].args))
 
                 ret[i] = res or false
             else
                 ret[i] = false
             end
 
-            refetch = 1
+            errcode = 1
         else
             ret[i] = rs
         end
     end
 
-    return ret, nil, refetch
+    return ret, nil, errcode
 end
 
 
@@ -504,8 +573,6 @@ function _M.commit_pipeline(self)
         return nil, "no pipeline"
     end
 
-    local refetch
-
     self._reqs,  self._reqs_n  = nil, nil
     self._group, self._group_n = nil, nil
 
@@ -513,8 +580,20 @@ function _M.commit_pipeline(self)
 
     local map = {}
     for idx, req in ipairs(reqs) do
-        local slot = keyhashslot(req.key)
-        local nidx = slots[slot]
+        local nidx
+        if req.keypos == 3 then
+            local keynum = tonumber(req.args[2])
+            if keynum and keynum > 0 then
+                local slot = keyhashslot(req.args[3])
+                nidx = slots[slot]
+            else
+                local node_num = cache_nodes[self.config.name].node_num
+                nidx = _random(1, node_num * 3) % node_num + 1
+            end
+        else
+            local slot = keyhashslot(req.args[1])
+            nidx = slots[slot]
+        end
 
         if not map[nidx] then
             map[nidx] = { nidx = nidx, reqs = {}, idxs = {} }
@@ -526,20 +605,16 @@ function _M.commit_pipeline(self)
 
     local ret = new_tab(0, #reqs)
 
+    local refetch
     for nidx, item in pairs(map) do
-        local res, err, refetch = _commit(self, nidx, item.reqs)
+        local res, err, errcode = _commit(self, nidx, item.reqs)
 
-        if refetch then
-            if refetch > 0 then
-                _fetch_slots(self)
-            end
-
-            if refetch == 2 then
-                res, err = _commit(self, nidx, item.reqs)
-            end
+        if errcode then
+            refetch = true
         end
 
         if not res then
+            _async_fetch_slots(self)
             return nil, err
         end
 
@@ -562,13 +637,14 @@ function _M.cancel_pipeline(self)
 end
 
 
-local function _do_mcmd(self, mcmd, cmd, ...)
+local function _do_mcmd(self, keypos, mcmd, cmd, ...)
     local pipeline = self._reqs and true or nil
     if not pipeline then
         _M.init_pipeline(self)
     end
 
     local args = { ... }
+
     local decompose_size = 1
     if mcmd == "mset" or mcmd == "msetnx" then
         decompose_size = 2
@@ -586,8 +662,8 @@ local function _do_mcmd(self, mcmd, cmd, ...)
         self._reqs_n = self._reqs_n + 1
         self._reqs[self._reqs_n] = {
             cmd  = cmd,
-            key  = args[i],
-            args = decompose_size > 1 and { args[i + 1] }
+            keypos  = 1,
+            args = decompose_size == 1 and { args[i] } or { args[i], args[i + 1] }
         }
     end
 
@@ -604,10 +680,11 @@ end
 
 for mcmd, item in pairs(mcommands) do
     local cmd = item.cmd
+    local keypos = 1
 
     _M[mcmd] =
         function (self, ...)
-            return _do_mcmd(self, mcmd, cmd, ...)
+            return _do_mcmd(self, keypos, mcmd, cmd, ...)
         end
 end
 
